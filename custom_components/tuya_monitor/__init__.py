@@ -50,10 +50,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # Setup coordinators for each configured device
     devices = entry.options.get(CONF_DEVICES, {})
     if not devices:
-        # If no devices are configured, we still want to proceed
-        _LOGGER.info("No Tuya devices configured")
+        _LOGGER.warning("No Tuya devices configured")
     
     for device_id, device_config in devices.items():
+        _LOGGER.info(f"Setting up coordinator for device: {device_id}")
+        _LOGGER.info(f"Device properties: {device_config.get(CONF_PROPERTIES, [])}")
         coordinator = TuyaDeviceCoordinator(
             hass,
             config,
@@ -64,8 +65,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         try:
             await coordinator.async_config_entry_first_refresh()
             coordinators[device_id] = coordinator
+            _LOGGER.info(f"Coordinator setup successful for device: {device_id}")
         except Exception as err:
-            _LOGGER.error(f"Failed to setup coordinator for device {device_id}: {err}")
+            _LOGGER.error(f"Failed to setup coordinator for device {device_id}: {err}", exc_info=True)
     
     # Store coordinators in hass.data for use in sensor platform
     hass.data[DOMAIN][entry.entry_id] = {
@@ -114,7 +116,6 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
         try:
             async with async_timeout.timeout(10):
                 # Construct the Tuya API endpoint for device properties
-                # Note: This is a placeholder and needs to be replaced with actual Tuya API endpoint
                 region_map = {
                     "us": "https://openapi.tuyaus.com",
                     "eu": "https://openapi.tuyaeu.com",
@@ -133,31 +134,41 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                     "Content-Type": "application/json"
                 }
                 
+                _LOGGER.info(f"Fetching data from URL: {url}")
+                _LOGGER.info(f"Requested properties: {self.properties}")
+                
                 # Use the session from Home Assistant
                 session = async_get_clientsession(self.hass)
                 
                 # Make the API request
                 async with session.get(url, headers=headers) as response:
+                    _LOGGER.info(f"API Response Status: {response.status}")
+                    
                     if response.status != 200:
+                        response_text = await response.text()
+                        _LOGGER.error(f"API Error Response: {response_text}")
                         raise UpdateFailed(f"API returned status code {response.status}")
                     
                     # Parse the response
                     data = await response.json()
+                    _LOGGER.info(f"Full API Response: {data}")
                     
                     # Filter and process only the requested properties
                     properties = []
                     for prop in data.get("result", []):
+                        _LOGGER.info(f"Processing property: {prop}")
                         if prop.get("code") in self.properties:
                             properties.append({
                                 "code": prop.get("code"),
                                 "value": prop.get("value")
                             })
                     
+                    _LOGGER.info(f"Filtered Properties: {properties}")
                     return {"properties": properties}
         
         except aiohttp.ClientError as err:
-            _LOGGER.error(f"Tuya API connection error: {err}")
+            _LOGGER.error(f"Tuya API connection error: {err}", exc_info=True)
             raise UpdateFailed(f"Error communicating with Tuya API: {err}") from err
         except Exception as err:
-            _LOGGER.error(f"Unexpected error fetching Tuya device data: {err}")
+            _LOGGER.error(f"Unexpected error fetching Tuya device data: {err}", exc_info=True)
             raise UpdateFailed(f"Unexpected error: {err}")
