@@ -5,10 +5,9 @@
   "documentation": "https://github.com/your-username/tuya_monitor",
   "requirements": [
     "aiohttp",
-    "async_timeout"
+    "async_timeout",
+    "voluptuous"
   ],
   "dependencies": [],
   "codeowners": ["@your-github-username"],
-  "iot_class": "cloud_polling",
-  "version": "0.1.0"
-}
+  "iot
