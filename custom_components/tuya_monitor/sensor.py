@@ -15,24 +15,37 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     """Set up Tuya Monitor sensors based on config entry."""
-    entry_data = hass.data[DOMAIN][entry.entry_id]
-    coordinators = entry_data["coordinators"]
+    _LOGGER.info("Setting up Tuya Monitor sensors")
     
-    sensors = []
-    for device_id, coordinator in coordinators.items():
-        device_data = entry.options[CONF_DEVICES][device_id]
-        properties = device_data.get("properties", [])
+    try:
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        coordinators = entry_data["coordinators"]
         
-        for property_code in properties:
-            sensors.append(
-                TuyaPropertySensor(
+        _LOGGER.info(f"Found {len(coordinators)} coordinators")
+        
+        sensors = []
+        for device_id, coordinator in coordinators.items():
+            _LOGGER.info(f"Processing device: {device_id}")
+            
+            device_data = entry.options[CONF_DEVICES][device_id]
+            properties = device_data.get("properties", [])
+            
+            _LOGGER.info(f"Device properties: {properties}")
+            
+            for property_code in properties:
+                sensor = TuyaPropertySensor(
                     coordinator,
                     device_id,
                     property_code,
                 )
-            )
+                sensors.append(sensor)
+                _LOGGER.info(f"Created sensor for {device_id} - {property_code}")
+        
+        async_add_entities(sensors)
+        _LOGGER.info(f"Added {len(sensors)} Tuya Monitor sensors")
     
-    async_add_entities(sensors)
+    except Exception as err:
+        _LOGGER.error(f"Error setting up Tuya Monitor sensors: {err}", exc_info=True)
 
 class TuyaPropertySensor(CoordinatorEntity, SensorEntity):
     """Representation of a Tuya device property sensor."""
@@ -44,15 +57,29 @@ class TuyaPropertySensor(CoordinatorEntity, SensorEntity):
         self.property_code = property_code
         self._attr_name = f"Tuya {device_id} {property_code}"
         self._attr_unique_id = f"{device_id}_{property_code}"
+        
+        _LOGGER.info(f"Initializing sensor: {self._attr_name}")
 
     @property
     def native_value(self):
         """Return the state of the sensor."""
-        if self.coordinator.data and "properties" in self.coordinator.data:
-            for prop in self.coordinator.data["properties"]:
-                if prop.get("code") == self.property_code:
-                    return prop.get("value")
-        return None
+        _LOGGER.info(f"Fetching value for {self._attr_name}")
+        _LOGGER.info(f"Coordinator data: {self.coordinator.data}")
+        
+        try:
+            if self.coordinator.data and "properties" in self.coordinator.data:
+                for prop in self.coordinator.data["properties"]:
+                    _LOGGER.info(f"Checking property: {prop}")
+                    if prop.get("code") == self.property_code:
+                        value = prop.get("value")
+                        _LOGGER.info(f"Found value for {self.property_code}: {value}")
+                        return value
+            
+            _LOGGER.warning(f"No value found for {self.property_code}")
+            return None
+        except Exception as err:
+            _LOGGER.error(f"Error getting native value: {err}", exc_info=True)
+            return None
 
     @property
     def device_info(self):
