@@ -48,7 +48,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     coordinators = {}
     
     # Setup coordinators for each configured device
-    for device_id, device_config in entry.options.get(CONF_DEVICES, {}).items():
+    devices = entry.options.get(CONF_DEVICES, {})
+    if not devices:
+        # If no devices are configured, we still want to proceed
+        _LOGGER.info("No Tuya devices configured")
+    
+    for device_id, device_config in devices.items():
         coordinator = TuyaDeviceCoordinator(
             hass,
             config,
@@ -56,8 +61,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             device_config.get(CONF_PROPERTIES, []),
             device_config.get(CONF_SCAN_INTERVAL, 60)
         )
-        await coordinator.async_config_entry_first_refresh()
-        coordinators[device_id] = coordinator
+        try:
+            await coordinator.async_config_entry_first_refresh()
+            coordinators[device_id] = coordinator
+        except Exception as err:
+            _LOGGER.error(f"Failed to setup coordinator for device {device_id}: {err}")
     
     # Store coordinators in hass.data for use in sensor platform
     hass.data[DOMAIN][entry.entry_id] = {
