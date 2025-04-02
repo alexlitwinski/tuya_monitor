@@ -7,6 +7,9 @@ from datetime import timedelta
 
 import aiohttp
 import async_timeout
+import hashlib
+import hmac
+import time
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -88,6 +91,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     
     return unload_ok
 
+def generate_sign(client_secret, token, t, method='HMAC-SHA256'):
+    """Generate Tuya API signature."""
+    message = f"{token}{t}"
+    sign = hmac.new(
+        client_secret.encode('utf-8'), 
+        message.encode('utf-8'), 
+        hashlib.sha256
+    ).hexdigest().upper()
+    return sign
+
 class TuyaDeviceCoordinator(DataUpdateCoordinator):
     """Coordinator for Tuya devices."""
 
@@ -125,23 +138,42 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                 base_url = region_map.get(self.config.get(CONF_REGION, "us"), 
                                           "https://openapi.tuyaus.com")
                 
+                # Prepare timestamp and signature
+                t = str(int(time.time() * 1000))
+                client_id = self.config[CONF_CLIENT_ID]
+                client_secret = self.config[CONF_CLIENT_SECRET]
+                access_token = self.config[CONF_ACCESS_TOKEN]
+                
                 # Construct the URL for fetching device properties
-                url = f"{base_url}/v1.0/devices/{self.device_id}/properties"
+                url = f"{base_url}/v2.0/cloud/thing/{self.device_id}/shadow/properties"
+                
+                # Prepare query parameters (property codes)
+                params = {
+                    "codes": ",".join(self.properties)
+                }
                 
                 # Prepare headers for authentication
+                sign = generate_sign(client_secret, access_token, t)
                 headers = {
-                    "Authorization": f"Bearer {self.config[CONF_ACCESS_TOKEN]}",
-                    "Content-Type": "application/json"
+                    "client_id": client_id,
+                    "t": t,
+                    "sign_method": "HMAC-SHA256",
+                    "sign": sign,
+                    "access_token": access_token,
+                    "Content-Type": "application/json",
+                    "mode": "cors"
                 }
                 
                 _LOGGER.info(f"Fetching data from URL: {url}")
                 _LOGGER.info(f"Requested properties: {self.properties}")
+                _LOGGER.info(f"Headers: {headers}")
+                _LOGGER.info(f"Params: {params}")
                 
                 # Use the session from Home Assistant
                 session = async_get_clientsession(self.hass)
                 
                 # Make the API request
-                async with session.get(url, headers=headers) as response:
+                async with session.get(url, headers=headers, params=params) as response:
                     _LOGGER.info(f"API Response Status: {response.status}")
                     
                     if response.status != 200:
@@ -153,10 +185,14 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                     data = await response.json()
                     _LOGGER.info(f"Full API Response: {data}")
                     
-                    # Filter and process only the requested properties
+                    # Process the new response structure
+                    if not data.get("success", False):
+                        raise UpdateFailed("API request was not successful")
+                    
+                    # Extract and process properties
+                    raw_properties = data.get("result", {}).get("properties", [])
                     properties = []
-                    for prop in data.get("result", []):
-                        _LOGGER.info(f"Processing property: {prop}")
+                    for prop in raw_properties:
                         if prop.get("code") in self.properties:
                             properties.append({
                                 "code": prop.get("code"),
