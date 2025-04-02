@@ -1,6 +1,7 @@
 """Config flow for Tuya Monitor integration."""
 import logging
 import voluptuous as vol
+import aiohttp
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -34,17 +35,30 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            return self.async_create_entry(
-                title=user_input.get(CONF_NAME, "Tuya Monitor"),
-                data={
-                    CONF_CLIENT_ID: user_input[CONF_CLIENT_ID],
-                    CONF_CLIENT_SECRET: user_input[CONF_CLIENT_SECRET],
-                    CONF_REGION: user_input[CONF_REGION],
-                    CONF_ACCESS_TOKEN: user_input[CONF_ACCESS_TOKEN],
-                    CONF_USER_ID: user_input.get(CONF_USER_ID, ""),
-                },
-                options={CONF_DEVICES: {}},
-            )
+            try:
+                # Validate Tuya credentials
+                await self._validate_tuya_credentials(
+                    user_input[CONF_CLIENT_ID],
+                    user_input[CONF_CLIENT_SECRET],
+                    user_input[CONF_REGION],
+                    user_input[CONF_ACCESS_TOKEN]
+                )
+
+                # Create the config entry
+                return self.async_create_entry(
+                    title=user_input.get(CONF_NAME, "Tuya Monitor"),
+                    data={
+                        CONF_CLIENT_ID: user_input[CONF_CLIENT_ID],
+                        CONF_CLIENT_SECRET: user_input[CONF_CLIENT_SECRET],
+                        CONF_REGION: user_input[CONF_REGION],
+                        CONF_ACCESS_TOKEN: user_input[CONF_ACCESS_TOKEN],
+                        CONF_USER_ID: user_input.get(CONF_USER_ID, ""),
+                    },
+                    options={CONF_DEVICES: {}},
+                )
+            except Exception as err:
+                _LOGGER.error(f"Error validating Tuya credentials: {err}")
+                errors["base"] = "cannot_connect"
 
         return self.async_show_form(
             step_id="user",
@@ -58,6 +72,35 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             errors=errors,
         )
+
+    async def _validate_tuya_credentials(self, client_id, client_secret, region, access_token):
+        """Validate Tuya API credentials."""
+        region_map = {
+            "us": "https://openapi.tuyaus.com",
+            "eu": "https://openapi.tuyaeu.com",
+            "cn": "https://openapi.tuyacn.com",
+            "in": "https://openapi.tuyain.com"
+        }
+        base_url = region_map.get(region, "https://openapi.tuyaus.com")
+        
+        # Example validation URL - adjust according to Tuya's actual API
+        validation_url = f"{base_url}/v1.0/user/account"
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                }
+                async with session.get(validation_url, headers=headers) as response:
+                    if response.status != 200:
+                        raise Exception(f"API returned status code {response.status}")
+                    
+                    # Optionally parse the response if needed
+                    # await response.json()
+            except Exception as err:
+                _LOGGER.error(f"Tuya API validation error: {err}")
+                raise
 
     @staticmethod
     @callback
