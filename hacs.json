@@ -1,0 +1,7 @@
+{
+  "name": "Tuya Monitor",
+  "content_in_root": false,
+  "render_readme": true,
+  "domains": ["tuya_monitor"],
+  "homeassistant": "2023.9.0"
+}
