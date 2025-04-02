@@ -3,7 +3,10 @@
   "name": "Tuya Monitor",
   "config_flow": true,
   "documentation": "https://github.com/your-username/tuya_monitor",
-  "requirements": [],
+  "requirements": [
+    "aiohttp",
+    "async_timeout"
+  ],
   "dependencies": [],
   "codeowners": ["@your-github-username"],
   "iot_class": "cloud_polling",
