@@ -26,6 +26,13 @@ from .const import (
     CONF_SCAN_INTERVAL,
 )
 
+TUYA_REGION_ENDPOINTS = {
+    "us": "https://openapi.tuyaus.com",
+    "eu": "https://openapi.tuyaeu.com",
+    "cn": "https://openapi.tuyacn.com",
+    "in": "https://openapi.tuyain.com"
+}
+
 _LOGGER = logging.getLogger(__name__)
 
 def generate_sign(client_secret, token, t, method='HMAC-SHA256'):
@@ -37,6 +44,85 @@ def generate_sign(client_secret, token, t, method='HMAC-SHA256'):
         hashlib.sha256
     ).hexdigest().upper()
     return sign
+
+
+def generate_nonce():
+    """Generate a random nonce string."""
+    return str(uuid.uuid4())
+
+
+async def get_new_token(session, client_id, client_secret, region="us"):
+    """Get a new token from Tuya API."""
+    try:
+        region_map = {
+            "us": "https://openapi.tuyaus.com",
+            "eu": "https://openapi.tuyaeu.com",
+            "cn": "https://openapi.tuyacn.com",
+            "in": "https://openapi.tuyain.com"
+        }
+        base_url = region_map.get(region, TUYA_REGION_ENDPOINTS["us"])
+        token_url = f"{base_url}/v1.0/token?grant_type=1"
+        
+        # Generate timestamp and signature
+        timestamp = str(int(time.time() * 1000))
+        nonce = generate_nonce()
+        
+        # Create string to sign and sign it
+        string_to_sign = client_id + timestamp + nonce
+        signature = hmac.new(
+            client_secret.encode('utf-8'),
+            string_to_sign.encode('utf-8'),
+            hashlib.sha256
+        ).digest()
+        sign_hex = base64.b64encode(signature).decode('utf-8')
+        
+        # Prepare headers and body
+        headers = {
+            "client_id": client_id,
+            "sign": sign_hex,
+            "t": timestamp,
+            "nonce": nonce,
+            "sign_method": "HMAC-SHA256",
+            "Content-Type": "application/json"
+        }
+        
+        _LOGGER.debug(f"Attempting to get new token with URL: {token_url}")
+        
+        async with async_timeout.timeout(10):
+            async with session.get(token_url, headers=headers) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    _LOGGER.error(f"Get token failed with status {response.status}: {error_text}")
+                    return None
+                    
+                data = await response.json()
+                
+                if not data.get("success", False):
+                    error_msg = data.get("msg", "Unknown error")
+                    _LOGGER.error(f"Get token failed: {error_msg}")
+                    return None
+                
+                result = data.get("result", {})
+                if not result:
+                    _LOGGER.error("Empty result from get token")
+                    return None
+                
+                access_token = result.get("access_token")
+                refresh_token = result.get("refresh_token")
+                expire_time = result.get("expire_time")
+                
+                _LOGGER.info(f"Successfully obtained new token. Token expires in {expire_time} seconds")
+                
+                return {
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "expire_time": expire_time,
+                    "expiration_time": int(time.time()) + int(expire_time)
+                }
+    
+    except Exception as e:
+        _LOGGER.error(f"Error getting new Tuya token: {e}")
+        return None
 
 class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Tuya Monitor."""
@@ -57,15 +143,18 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_REGION]
                 )
 
-                # Get a fresh token using provided credentials
+                # Create a simple session for this request only
                 session = aiohttp.ClientSession()
-                new_token_info = await get_new_token(
-                    session, 
-                    user_input[CONF_CLIENT_ID],
-                    user_input[CONF_CLIENT_SECRET],
-                    user_input[CONF_REGION]
-                )
-                await session.close()
+                try:
+                    # Get a fresh token using provided credentials
+                    new_token_info = await get_new_token(
+                        session, 
+                        user_input[CONF_CLIENT_ID],
+                        user_input[CONF_CLIENT_SECRET],
+                        user_input[CONF_REGION]
+                    )
+                finally:
+                    await session.close()
                 
                 # Only proceed if we successfully got a token
                 if not new_token_info:
