@@ -58,14 +58,41 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     user_input[CONF_ACCESS_TOKEN]
                 )
 
-                # Create the config entry
+                # Get a fresh token using provided credentials
+                session = aiohttp.ClientSession()
+                new_token_info = await get_new_token(
+                    session, 
+                    user_input[CONF_CLIENT_ID],
+                    user_input[CONF_CLIENT_SECRET],
+                    user_input[CONF_REGION]
+                )
+                await session.close()
+                
+                # Only proceed if we successfully got a token
+                if not new_token_info:
+                    errors["base"] = "token_failed"
+                    return self.async_show_form(
+                        step_id="user",
+                        data_schema=vol.Schema({
+                            vol.Required(CONF_NAME, default="Tuya Monitor"): str,
+                            vol.Required(CONF_CLIENT_ID): str,
+                            vol.Required(CONF_CLIENT_SECRET): str,
+                            vol.Required(CONF_REGION, default="us"): vol.In(["us", "eu", "cn", "in"]),
+                            vol.Optional(CONF_USER_ID): str,
+                        }),
+                        errors=errors,
+                    )
+                
+                # Create the config entry with the fresh token
                 return self.async_create_entry(
                     title=user_input.get(CONF_NAME, "Tuya Monitor"),
                     data={
                         CONF_CLIENT_ID: user_input[CONF_CLIENT_ID],
                         CONF_CLIENT_SECRET: user_input[CONF_CLIENT_SECRET],
                         CONF_REGION: user_input[CONF_REGION],
-                        CONF_ACCESS_TOKEN: user_input[CONF_ACCESS_TOKEN],
+                        CONF_ACCESS_TOKEN: new_token_info["access_token"],
+                        CONF_REFRESH_TOKEN: new_token_info["refresh_token"],
+                        CONF_TOKEN_EXPIRATION: new_token_info["expiration_time"],
                         CONF_USER_ID: user_input.get(CONF_USER_ID, ""),
                     },
                     options={CONF_DEVICES: {}},
@@ -81,7 +108,6 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_CLIENT_ID): str,
                 vol.Required(CONF_CLIENT_SECRET): str,
                 vol.Required(CONF_REGION, default="us"): vol.In(["us", "eu", "cn", "in"]),
-                vol.Required(CONF_ACCESS_TOKEN): str,
                 vol.Optional(CONF_USER_ID): str,
             }),
             errors=errors,
