@@ -4,12 +4,14 @@ A simple integration to monitor property values from Tuya devices using the Tuya
 """
 import logging
 from datetime import timedelta
+import json
+import time
+import hashlib
+import hmac
+import base64
 
 import aiohttp
 import async_timeout
-import hashlib
-import hmac
-import time
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -57,12 +59,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     
     for device_id, device_config in devices.items():
         _LOGGER.info(f"Setting up coordinator for device: {device_id}")
-        _LOGGER.info(f"Device properties: {device_config.get(CONF_PROPERTIES, [])}")
+        
+        # Ensure properties is a list
+        properties = device_config.get(CONF_PROPERTIES, [])
+        if isinstance(properties, str):
+            properties = [p.strip() for p in properties.split(",")]
+            
+        _LOGGER.info(f"Device properties: {properties}")
+        
         coordinator = TuyaDeviceCoordinator(
             hass,
             config,
             device_id,
-            device_config.get(CONF_PROPERTIES, []),
+            properties,
             device_config.get(CONF_SCAN_INTERVAL, 60)
         )
         try:
@@ -92,7 +101,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     return unload_ok
 
 def generate_sign(client_secret, token, t, method='HMAC-SHA256'):
-    """Generate Tuya API signature."""
+    """Generate Tuya API signature.
+    
+    This uses the exact signature method from the working example.
+    """
     message = f"{token}{t}"
     sign = hmac.new(
         client_secret.encode('utf-8'), 
@@ -138,42 +150,43 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                 base_url = region_map.get(self.config.get(CONF_REGION, "us"), 
                                           "https://openapi.tuyaus.com")
                 
-                # Prepare timestamp and signature
-                t = str(int(time.time() * 1000))
+                # Prepare timestamp, client info and access token
+                timestamp = str(int(time.time() * 1000))
                 client_id = self.config[CONF_CLIENT_ID]
                 client_secret = self.config[CONF_CLIENT_SECRET]
                 access_token = self.config[CONF_ACCESS_TOKEN]
                 
+                # Generate signature using the exact method from the working example
+                signature = generate_sign(
+                    client_secret,
+                    access_token,
+                    timestamp
+                )
+                
                 # Construct the URL for fetching device properties
+                # Using the exact endpoint from the working example
                 url = f"{base_url}/v2.0/cloud/thing/{self.device_id}/shadow/properties"
                 
-                # Prepare query parameters (property codes)
-                params = {
-                    "codes": ",".join(self.properties)
-                }
-                
                 # Prepare headers for authentication
-                sign = generate_sign(client_secret, access_token, t)
+                # Using the exact format from the working example
                 headers = {
                     "client_id": client_id,
-                    "t": t,
+                    "t": timestamp,
                     "sign_method": "HMAC-SHA256",
-                    "sign": sign,
+                    "sign": signature,
                     "access_token": access_token,
                     "Content-Type": "application/json",
                     "mode": "cors"
                 }
                 
                 _LOGGER.info(f"Fetching data from URL: {url}")
-                _LOGGER.info(f"Requested properties: {self.properties}")
                 _LOGGER.info(f"Headers: {headers}")
-                _LOGGER.info(f"Params: {params}")
                 
                 # Use the session from Home Assistant
                 session = async_get_clientsession(self.hass)
                 
                 # Make the API request
-                async with session.get(url, headers=headers, params=params) as response:
+                async with session.get(url, headers=headers) as response:
                     _LOGGER.info(f"API Response Status: {response.status}")
                     
                     if response.status != 200:
@@ -185,18 +198,33 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                     data = await response.json()
                     _LOGGER.info(f"Full API Response: {data}")
                     
-                    # Process the new response structure
+                    # Check success status
                     if not data.get("success", False):
-                        raise UpdateFailed("API request was not successful")
+                        error_msg = data.get("msg", "Unknown error")
+                        _LOGGER.error(f"API error: {error_msg}")
+                        raise UpdateFailed(f"API request was not successful: {error_msg}")
                     
-                    # Extract and process properties
-                    raw_properties = data.get("result", {}).get("properties", [])
+                        # Process the response data according to the exact structure from the example
+                    result = data.get("result", {})
+                    if not result or "properties" not in result:
+                        _LOGGER.warning("No property data returned from API")
+                        return {"properties": []}
+                    
+                    # Extract the properties directly from the result structure
+                    raw_properties = result.get("properties", [])
+                    
+                    # Filter properties if needed
                     properties = []
+                    filter_properties = len(self.properties) > 0
+                    
                     for prop in raw_properties:
-                        if prop.get("code") in self.properties:
+                        code = prop.get("code")
+                        value = prop.get("value")
+                        
+                        if not filter_properties or code in self.properties:
                             properties.append({
-                                "code": prop.get("code"),
-                                "value": prop.get("value")
+                                "code": code,
+                                "value": value
                             })
                     
                     _LOGGER.info(f"Filtered Properties: {properties}")
