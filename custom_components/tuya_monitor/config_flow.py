@@ -2,6 +2,10 @@
 import logging
 import voluptuous as vol
 import aiohttp
+import time
+import hashlib
+import hmac
+import base64
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -23,6 +27,16 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+def generate_sign(client_secret, token, t, method='HMAC-SHA256'):
+    """Generate Tuya API signature using the exact method from the working example."""
+    message = f"{token}{t}"
+    sign = hmac.new(
+        client_secret.encode('utf-8'), 
+        message.encode('utf-8'), 
+        hashlib.sha256
+    ).hexdigest().upper()
+    return sign
 
 class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Tuya Monitor."""
@@ -83,21 +97,37 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         base_url = region_map.get(region, "https://openapi.tuyaus.com")
         
-        # Example validation URL - adjust according to Tuya's actual API
-        validation_url = f"{base_url}/v1.0/user/account"
+        # Use same endpoint format as in the working example
+        validation_url = f"{base_url}/v2.0/cloud/thing/eb88bd9b78672f0182uvzh/shadow/properties"
+        
+        timestamp = str(int(time.time() * 1000))
+        signature = generate_sign(client_secret, access_token, timestamp)
+        
+        headers = {
+            "client_id": client_id,
+            "t": timestamp,
+            "sign_method": "HMAC-SHA256",
+            "sign": signature,
+            "access_token": access_token,
+            "Content-Type": "application/json",
+            "mode": "cors"
+        }
         
         async with aiohttp.ClientSession() as session:
             try:
-                headers = {
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json"
-                }
                 async with session.get(validation_url, headers=headers) as response:
                     if response.status != 200:
-                        raise Exception(f"API returned status code {response.status}")
+                        data = await response.json()
+                        error_msg = data.get("msg", f"API returned status code {response.status}")
+                        _LOGGER.error(f"Tuya API validation error: {error_msg}")
+                        raise Exception(error_msg)
                     
-                    # Optionally parse the response if needed
-                    # await response.json()
+                    data = await response.json()
+                    if not data.get("success", False):
+                        error_msg = data.get("msg", "Unknown validation error")
+                        _LOGGER.error(f"Tuya API validation error: {error_msg}")
+                        raise Exception(error_msg)
+                    
             except Exception as err:
                 _LOGGER.error(f"Tuya API validation error: {err}")
                 raise
@@ -147,7 +177,12 @@ class TuyaMonitorOptionsFlowHandler(config_entries.OptionsFlow):
 
         if user_input is not None:
             device_id = user_input[CONF_DEVICE_ID]
-            properties = [p.strip() for p in user_input[CONF_PROPERTIES].split(",")]
+            
+            # Process properties as a list
+            if isinstance(user_input[CONF_PROPERTIES], str):
+                properties = [p.strip() for p in user_input[CONF_PROPERTIES].split(",") if p.strip()]
+            else:
+                properties = user_input[CONF_PROPERTIES]
             
             # Create or update device configuration
             if CONF_DEVICES not in self.options:
@@ -164,7 +199,7 @@ class TuyaMonitorOptionsFlowHandler(config_entries.OptionsFlow):
             step_id="add_device",
             data_schema=vol.Schema({
                 vol.Required(CONF_DEVICE_ID): str,
-                vol.Required(CONF_PROPERTIES): str,
+                vol.Required(CONF_PROPERTIES, description="Comma-separated list of properties (leave empty to fetch all)"): str,
                 vol.Required(CONF_SCAN_INTERVAL, default=60): int,
             }),
             errors=errors,
