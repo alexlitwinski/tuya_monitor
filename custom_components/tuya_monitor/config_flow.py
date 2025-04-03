@@ -54,8 +54,7 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self._validate_tuya_credentials(
                     user_input[CONF_CLIENT_ID],
                     user_input[CONF_CLIENT_SECRET],
-                    user_input[CONF_REGION],
-                    user_input[CONF_ACCESS_TOKEN]
+                    user_input[CONF_REGION]
                 )
 
                 # Get a fresh token using provided credentials
@@ -113,31 +112,30 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def _validate_tuya_credentials(self, client_id, client_secret, region, access_token):
-        """Validate Tuya API credentials."""
-        region_map = {
-            "us": "https://openapi.tuyaus.com",
-            "eu": "https://openapi.tuyaeu.com",
-            "cn": "https://openapi.tuyacn.com",
-            "in": "https://openapi.tuyain.com"
-        }
-        base_url = region_map.get(region, "https://openapi.tuyaus.com")
+    async def _validate_tuya_credentials(self, client_id, client_secret, region):
+        """Validate Tuya API credentials by attempting to get a token."""
         
-        # Use same endpoint format as in the working example
-        validation_url = f"{base_url}/v2.0/cloud/thing/eb88bd9b78672f0182uvzh/shadow/properties"
-        
-        timestamp = str(int(time.time() * 1000))
-        signature = generate_sign(client_secret, access_token, timestamp)
-        
-        headers = {
-            "client_id": client_id,
-            "t": timestamp,
-            "sign_method": "HMAC-SHA256",
-            "sign": signature,
-            "access_token": access_token,
-            "Content-Type": "application/json",
-            "mode": "cors"
-        }
+        # Validate by attempting to get a token
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Get a new token to validate credentials
+                token_result = await get_new_token(
+                    session, 
+                    client_id, 
+                    client_secret, 
+                    region
+                )
+                
+                if not token_result or not token_result.get("access_token"):
+                    _LOGGER.error("Failed to obtain token with provided credentials")
+                    raise Exception("Invalid credentials - could not obtain access token")
+                
+                _LOGGER.info("Successfully validated Tuya credentials")
+                return
+                
+        except Exception as err:
+            _LOGGER.error(f"Error validating credentials: {err}")
+            raise
         
         async with aiohttp.ClientSession() as session:
             try:
