@@ -36,7 +36,11 @@ from .const import (
     CONF_PROPERTIES,
     CONF_SCAN_INTERVAL,
     CONF_USER_ID,
+    CONF_REFRESH_TOKEN,
+    CONF_TOKEN_EXPIRATION,
 )
+
+from .token_manager import refresh_tuya_token, get_new_token
 
 _LOGGER = logging.getLogger(__name__)
 
