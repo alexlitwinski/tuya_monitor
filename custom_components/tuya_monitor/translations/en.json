@@ -3,13 +3,12 @@
     "step": {
       "user": {
         "title": "Set up Tuya Monitor",
-        "description": "Enter your Tuya API credentials.",
+        "description": "Enter your Tuya API credentials. A token will be automatically generated.",
         "data": {
           "name": "Integration Name",
           "client_id": "Client ID",
           "client_secret": "Client Secret",
           "region": "API Region",
-          "access_token": "Access Token",
           "user_id": "User ID (optional)"
         }
       }
@@ -17,6 +16,7 @@
     "error": {
       "cannot_connect": "Failed to connect to API",
       "invalid_auth": "Invalid authentication",
+      "token_failed": "Failed to obtain access token. Please check your credentials.",
       "unknown": "Unexpected error"
     },
     "abort": {
@@ -34,10 +34,10 @@
       },
       "add_device": {
         "title": "Add Device",
-        "description": "Add a device to monitor. For properties, enter comma-separated property codes.",
+        "description": "Add a device to monitor. For properties, enter comma-separated property codes (leave empty to fetch all properties).",
         "data": {
           "device_id": "Device ID",
-          "properties": "Properties (comma-separated)",
+          "properties": "Properties (comma-separated, leave empty for all)",
           "scan_interval": "Scan Interval (seconds)"
         }
       },
