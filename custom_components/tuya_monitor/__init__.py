@@ -9,6 +9,7 @@ import time
 import hashlib
 import hmac
 import base64
+import uuid
 
 import aiohttp
 import async_timeout
@@ -46,8 +47,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # Store a reference to the entry to access options later
     hass.data.setdefault(DOMAIN, {})
     
-    # Get Tuya API credentials from config entry
-    config = entry.data
+                    # Get Tuya API credentials from config entry
+    config = dict(entry.data)
     
     # Create a dictionary to store coordinators for each device
     coordinators = {}
