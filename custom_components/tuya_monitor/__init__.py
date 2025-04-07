@@ -40,7 +40,7 @@ from .const import (
     CONF_TOKEN_EXPIRATION,
 )
 
-from .token_manager import refresh_tuya_token, get_new_token
+from .token_manager import refresh_tuya_token, get_new_token, generate_sign, generate_nonce
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     # Store a reference to the entry to access options later
     hass.data.setdefault(DOMAIN, {})
     
-                    # Get Tuya API credentials from config entry
+    # Get Tuya API credentials from config entry
     config = dict(entry.data)
     
     # Create a dictionary to store coordinators for each device
@@ -105,15 +105,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry):
     
     return unload_ok
 
-def generate_sign(client_secret, token, t, method='HMAC-SHA256'):
-    """Generate Tuya API signature.
-    
-    This uses the exact signature method from the working example.
-    """
-    message = f"{token}{t}"
+def get_device_sign(client_id, access_token, secret, t):
+    """Generate Tuya API signature for device requests."""
+    message = client_id + access_token + t
     sign = hmac.new(
-        client_secret.encode('utf-8'), 
-        message.encode('utf-8'), 
+        secret.encode('utf-8'),
+        message.encode('utf-8'),
         hashlib.sha256
     ).hexdigest().upper()
     return sign
@@ -145,6 +142,61 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
         """Fetch data from Tuya API."""
         try:
             async with async_timeout.timeout(10):
+                # Check if token needs refresh
+                current_time = int(time.time())
+                token_expiration = self.config.get(CONF_TOKEN_EXPIRATION, 0)
+                
+                # If token expires in the next 5 minutes, refresh it
+                if current_time + 300 > token_expiration:
+                    _LOGGER.info("Access token expiring soon, refreshing...")
+                    session = async_get_clientsession(self.hass)
+                    
+                    # Try to refresh using refresh token first
+                    new_token_info = None
+                    if CONF_REFRESH_TOKEN in self.config:
+                        new_token_info = await refresh_tuya_token(
+                            session,
+                            self.config[CONF_CLIENT_ID],
+                            self.config[CONF_CLIENT_SECRET],
+                            self.config[CONF_REFRESH_TOKEN],
+                            self.config[CONF_REGION]
+                        )
+                    
+                    # If refresh failed or no refresh token, get a new token
+                    if not new_token_info:
+                        new_token_info = await get_new_token(
+                            session,
+                            self.config[CONF_CLIENT_ID],
+                            self.config[CONF_CLIENT_SECRET],
+                            self.config[CONF_REGION]
+                        )
+                    
+                    if new_token_info:
+                        # Update config with new token
+                        self.config[CONF_ACCESS_TOKEN] = new_token_info["access_token"]
+                        self.config[CONF_REFRESH_TOKEN] = new_token_info["refresh_token"]
+                        self.config[CONF_TOKEN_EXPIRATION] = new_token_info["expiration_time"]
+                        
+                        # Update config entry too
+                        entry = None
+                        for config_entry in self.hass.config_entries.async_entries(DOMAIN):
+                            if config_entry.data.get(CONF_CLIENT_ID) == self.config[CONF_CLIENT_ID]:
+                                entry = config_entry
+                                break
+                        
+                        if entry:
+                            self.hass.config_entries.async_update_entry(
+                                entry,
+                                data={
+                                    **entry.data,
+                                    CONF_ACCESS_TOKEN: new_token_info["access_token"],
+                                    CONF_REFRESH_TOKEN: new_token_info["refresh_token"],
+                                    CONF_TOKEN_EXPIRATION: new_token_info["expiration_time"]
+                                }
+                            )
+                    else:
+                        _LOGGER.error("Failed to refresh access token")
+                
                 # Construct the Tuya API endpoint for device properties
                 region_map = {
                     "us": "https://openapi.tuyaus.com",
@@ -161,47 +213,51 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                 client_secret = self.config[CONF_CLIENT_SECRET]
                 access_token = self.config[CONF_ACCESS_TOKEN]
                 
-                # Generate signature using the exact method from the working example
-                signature = generate_sign(
-                    client_secret,
+                # Generate signature for device access
+                signature = get_device_sign(
+                    client_id,
                     access_token,
+                    client_secret,
                     timestamp
                 )
                 
                 # Construct the URL for fetching device properties
-                # Using the exact endpoint from the working example
-                url = f"{base_url}/v2.0/cloud/thing/{self.device_id}/shadow/properties"
+                url = f"{base_url}/v1.0/devices/{self.device_id}/status"
                 
                 # Prepare headers for authentication
-                # Using the exact format from the working example
                 headers = {
                     "client_id": client_id,
-                    "t": timestamp,
-                    "sign_method": "HMAC-SHA256",
-                    "sign": signature,
                     "access_token": access_token,
-                    "Content-Type": "application/json",
-                    "mode": "cors"
+                    "t": timestamp,
+                    "sign": signature,
+                    "sign_method": "HMAC-SHA256",
+                    "Content-Type": "application/json"
                 }
                 
-                _LOGGER.info(f"Fetching data from URL: {url}")
-                _LOGGER.info(f"Headers: {headers}")
+                _LOGGER.debug(f"Fetching data from URL: {url}")
+                _LOGGER.debug(f"Headers: {headers}")
                 
                 # Use the session from Home Assistant
                 session = async_get_clientsession(self.hass)
                 
                 # Make the API request
                 async with session.get(url, headers=headers) as response:
-                    _LOGGER.info(f"API Response Status: {response.status}")
+                    response_text = await response.text()
+                    _LOGGER.debug(f"API Response: {response_text}")
                     
                     if response.status != 200:
-                        response_text = await response.text()
                         _LOGGER.error(f"API Error Response: {response_text}")
                         raise UpdateFailed(f"API returned status code {response.status}")
                     
                     # Parse the response
-                    data = await response.json()
-                    _LOGGER.info(f"Full API Response: {data}")
+                    try:
+                        data = await response.json()
+                    except Exception as e:
+                        _LOGGER.error(f"Failed to parse JSON response: {e}")
+                        _LOGGER.error(f"Response text: {response_text}")
+                        raise UpdateFailed(f"Failed to parse API response: {e}")
+                    
+                    _LOGGER.debug(f"Full API Response: {data}")
                     
                     # Check success status
                     if not data.get("success", False):
@@ -209,22 +265,21 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                         _LOGGER.error(f"API error: {error_msg}")
                         raise UpdateFailed(f"API request was not successful: {error_msg}")
                     
-                    # Process the response data according to the exact structure from the example
-                    result = data.get("result", {})
-                    if not result or "properties" not in result:
-                        _LOGGER.warning("No property data returned from API")
+                    # Process the response data according to the Tuya API structure
+                    result = data.get("result", [])
+                    if not result:
+                        _LOGGER.warning("No device status data returned from API")
                         return {"properties": []}
                     
-                    # Extract the properties directly from the result structure
-                    raw_properties = result.get("properties", [])
+                    # Format the device properties in a standard way
+                    properties = []
                     
                     # Filter properties if needed
-                    properties = []
                     filter_properties = len(self.properties) > 0
                     
-                    for prop in raw_properties:
-                        code = prop.get("code")
-                        value = prop.get("value")
+                    for status_item in result:
+                        code = status_item.get("code")
+                        value = status_item.get("value")
                         
                         if not filter_properties or code in self.properties:
                             properties.append({
@@ -232,7 +287,7 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                                 "value": value
                             })
                     
-                    _LOGGER.info(f"Filtered Properties: {properties}")
+                    _LOGGER.debug(f"Filtered Properties: {properties}")
                     return {"properties": properties}
         
         except aiohttp.ClientError as err:
