@@ -192,4 +192,52 @@ class TuyaDeviceCoordinator(DataUpdateCoordinator):
                 
                 # Make the API request
                 async with session.get(url, headers=headers) as response:
-                    _LOGG
+                    _LOGGER.info(f"API Response Status: {response.status}")
+                    
+                    if response.status != 200:
+                        response_text = await response.text()
+                        _LOGGER.error(f"API Error Response: {response_text}")
+                        raise UpdateFailed(f"API returned status code {response.status}")
+                    
+                    # Parse the response
+                    data = await response.json()
+                    _LOGGER.info(f"Full API Response: {data}")
+                    
+                    # Check success status
+                    if not data.get("success", False):
+                        error_msg = data.get("msg", "Unknown error")
+                        _LOGGER.error(f"API error: {error_msg}")
+                        raise UpdateFailed(f"API request was not successful: {error_msg}")
+                    
+                    # Process the response data according to the exact structure from the example
+                    result = data.get("result", {})
+                    if not result or "properties" not in result:
+                        _LOGGER.warning("No property data returned from API")
+                        return {"properties": []}
+                    
+                    # Extract the properties directly from the result structure
+                    raw_properties = result.get("properties", [])
+                    
+                    # Filter properties if needed
+                    properties = []
+                    filter_properties = len(self.properties) > 0
+                    
+                    for prop in raw_properties:
+                        code = prop.get("code")
+                        value = prop.get("value")
+                        
+                        if not filter_properties or code in self.properties:
+                            properties.append({
+                                "code": code,
+                                "value": value
+                            })
+                    
+                    _LOGGER.info(f"Filtered Properties: {properties}")
+                    return {"properties": properties}
+        
+        except aiohttp.ClientError as err:
+            _LOGGER.error(f"Tuya API connection error: {err}", exc_info=True)
+            raise UpdateFailed(f"Error communicating with Tuya API: {err}") from err
+        except Exception as err:
+            _LOGGER.error(f"Unexpected error fetching Tuya device data: {err}", exc_info=True)
+            raise UpdateFailed(f"Unexpected error: {err}")
