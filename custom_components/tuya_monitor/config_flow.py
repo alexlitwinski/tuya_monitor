@@ -6,8 +6,8 @@ import time
 import hashlib
 import hmac
 import base64
-import uuid  # Adicionando importação do uuid
-import async_timeout  # Adicionando importação do async_timeout
+import uuid
+import async_timeout
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -39,16 +39,25 @@ TUYA_REGION_ENDPOINTS = {
 
 _LOGGER = logging.getLogger(__name__)
 
-def generate_sign(client_secret, token, t, method='HMAC-SHA256'):
-    """Generate Tuya API signature using the exact method from the working example."""
-    message = f"{token}{t}"
-    sign = hmac.new(
-        client_secret.encode('utf-8'), 
-        message.encode('utf-8'), 
+def generate_sign(client_id, client_secret, timestamp, nonce, method='HMAC-SHA256'):
+    """Generate Tuya API signature using the Tuya signature method.
+    
+    For token requests, we need to use this specific signature method.
+    """
+    # Create string to sign
+    string_to_sign = client_id + timestamp + nonce
+    
+    # Sign it
+    signature = hmac.new(
+        client_secret.encode('utf-8'),
+        string_to_sign.encode('utf-8'),
         hashlib.sha256
-    ).hexdigest().upper()
-    return sign
-
+    ).digest()
+    
+    # Base64 encode the signature
+    sign_hex = base64.b64encode(signature).decode('utf-8')
+    
+    return sign_hex
 
 def generate_nonce():
     """Generate a random nonce string."""
@@ -58,35 +67,23 @@ def generate_nonce():
 async def get_new_token(session, client_id, client_secret, region="us"):
     """Get a new token from Tuya API."""
     try:
-        region_map = {
-            "us": "https://openapi.tuyaus.com",
-            "eu": "https://openapi.tuyaeu.com",
-            "cn": "https://openapi.tuyacn.com",
-            "in": "https://openapi.tuyain.com"
-        }
-        base_url = region_map.get(region, TUYA_REGION_ENDPOINTS["us"])
+        base_url = TUYA_REGION_ENDPOINTS.get(region, TUYA_REGION_ENDPOINTS["us"])
         token_url = f"{base_url}/v1.0/token?grant_type=1"
         
-        # Generate timestamp and signature
+        # Generate timestamp and nonce
         timestamp = str(int(time.time() * 1000))
         nonce = generate_nonce()
         
-        # Create string to sign and sign it
-        string_to_sign = client_id + timestamp + nonce
-        signature = hmac.new(
-            client_secret.encode('utf-8'),
-            string_to_sign.encode('utf-8'),
-            hashlib.sha256
-        ).digest()
-        sign_hex = base64.b64encode(signature).decode('utf-8')
+        # Generate signature
+        sign = generate_sign(client_id, client_secret, timestamp, nonce)
         
-        # Prepare headers and body
+        # Prepare headers
         headers = {
             "client_id": client_id,
-            "sign": sign_hex,
+            "sign": sign,
             "t": timestamp,
-            "nonce": nonce,
             "sign_method": "HMAC-SHA256",
+            "nonce": nonce,
             "Content-Type": "application/json"
         }
         
@@ -95,12 +92,20 @@ async def get_new_token(session, client_id, client_secret, region="us"):
         
         async with async_timeout.timeout(10):
             async with session.get(token_url, headers=headers) as response:
+                response_text = await response.text()
+                _LOGGER.debug(f"Token API response: {response_text}")
+                
                 if response.status != 200:
-                    error_text = await response.text()
-                    _LOGGER.error(f"Get token failed with status {response.status}: {error_text}")
+                    _LOGGER.error(f"Get token failed with status {response.status}: {response_text}")
                     return None
                     
-                data = await response.json()
+                try:
+                    data = await response.json()
+                except Exception as e:
+                    _LOGGER.error(f"Failed to parse JSON response: {e}")
+                    _LOGGER.error(f"Response text: {response_text}")
+                    return None
+                
                 _LOGGER.debug(f"Token response: {data}")
                 
                 if not data.get("success", False):
@@ -127,7 +132,7 @@ async def get_new_token(session, client_id, client_secret, region="us"):
                 }
     
     except Exception as e:
-        _LOGGER.error(f"Error getting new Tuya token: {e}")
+        _LOGGER.error(f"Error getting new Tuya token: {e}", exc_info=True)
         return None
 
 class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -182,7 +187,7 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     options={CONF_DEVICES: {}},
                 )
             except Exception as err:
-                _LOGGER.error(f"Error validating Tuya credentials: {err}")
+                _LOGGER.error(f"Error validating Tuya credentials: {err}", exc_info=True)
                 errors["base"] = "cannot_connect"
 
         return self.async_show_form(
