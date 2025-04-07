@@ -6,6 +6,8 @@ import time
 import hashlib
 import hmac
 import base64
+import uuid  # Adicionando importação do uuid
+import async_timeout  # Adicionando importação do async_timeout
 
 from homeassistant import config_entries
 from homeassistant.core import callback
@@ -24,6 +26,8 @@ from .const import (
     CONF_DEVICE_ID,
     CONF_PROPERTIES,
     CONF_SCAN_INTERVAL,
+    CONF_REFRESH_TOKEN,
+    CONF_TOKEN_EXPIRATION,
 )
 
 TUYA_REGION_ENDPOINTS = {
@@ -87,6 +91,7 @@ async def get_new_token(session, client_id, client_secret, region="us"):
         }
         
         _LOGGER.debug(f"Attempting to get new token with URL: {token_url}")
+        _LOGGER.debug(f"Headers: {headers}")
         
         async with async_timeout.timeout(10):
             async with session.get(token_url, headers=headers) as response:
@@ -96,6 +101,7 @@ async def get_new_token(session, client_id, client_secret, region="us"):
                     return None
                     
                 data = await response.json()
+                _LOGGER.debug(f"Token response: {data}")
                 
                 if not data.get("success", False):
                     error_msg = data.get("msg", "Unknown error")
@@ -136,16 +142,8 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             try:
-                # Validate Tuya credentials
-                await self._validate_tuya_credentials(
-                    user_input[CONF_CLIENT_ID],
-                    user_input[CONF_CLIENT_SECRET],
-                    user_input[CONF_REGION]
-                )
-
                 # Create a simple session for this request only
-                session = aiohttp.ClientSession()
-                try:
+                async with aiohttp.ClientSession() as session:
                     # Get a fresh token using provided credentials
                     new_token_info = await get_new_token(
                         session, 
@@ -153,8 +151,6 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         user_input[CONF_CLIENT_SECRET],
                         user_input[CONF_REGION]
                     )
-                finally:
-                    await session.close()
                 
                 # Only proceed if we successfully got a token
                 if not new_token_info:
@@ -200,50 +196,6 @@ class TuyaMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }),
             errors=errors,
         )
-
-    async def _validate_tuya_credentials(self, client_id, client_secret, region):
-        """Validate Tuya API credentials by attempting to get a token."""
-        
-        # Validate by attempting to get a token
-        try:
-            async with aiohttp.ClientSession() as session:
-                # Get a new token to validate credentials
-                token_result = await get_new_token(
-                    session, 
-                    client_id, 
-                    client_secret, 
-                    region
-                )
-                
-                if not token_result or not token_result.get("access_token"):
-                    _LOGGER.error("Failed to obtain token with provided credentials")
-                    raise Exception("Invalid credentials - could not obtain access token")
-                
-                _LOGGER.info("Successfully validated Tuya credentials")
-                return
-                
-        except Exception as err:
-            _LOGGER.error(f"Error validating credentials: {err}")
-            raise
-        
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(validation_url, headers=headers) as response:
-                    if response.status != 200:
-                        data = await response.json()
-                        error_msg = data.get("msg", f"API returned status code {response.status}")
-                        _LOGGER.error(f"Tuya API validation error: {error_msg}")
-                        raise Exception(error_msg)
-                    
-                    data = await response.json()
-                    if not data.get("success", False):
-                        error_msg = data.get("msg", "Unknown validation error")
-                        _LOGGER.error(f"Tuya API validation error: {error_msg}")
-                        raise Exception(error_msg)
-                    
-            except Exception as err:
-                _LOGGER.error(f"Tuya API validation error: {err}")
-                raise
 
     @staticmethod
     @callback
