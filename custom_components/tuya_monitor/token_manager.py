@@ -4,7 +4,7 @@ import time
 import hashlib
 import hmac
 import base64
-import uuid
+import uuid  # Adicionando importação do uuid
 
 import aiohttp
 import async_timeout
@@ -129,6 +129,7 @@ async def get_new_token(session, client_id, client_secret, region="us"):
         }
         
         _LOGGER.debug(f"Attempting to get new token with URL: {token_url}")
+        _LOGGER.debug(f"Headers: {headers}")
         
         async with async_timeout.timeout(10):
             async with session.get(token_url, headers=headers) as response:
@@ -138,6 +139,7 @@ async def get_new_token(session, client_id, client_secret, region="us"):
                     return None
                     
                 data = await response.json()
+                _LOGGER.debug(f"Token response: {data}")
                 
                 if not data.get("success", False):
                     error_msg = data.get("msg", "Unknown error")
